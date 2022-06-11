@@ -15,21 +15,37 @@ from sklearn.cluster import KMeans, DBSCAN
 import pickle
 from keras.callbacks import ModelCheckpoint
 from tensorflow import train
+from nltk.corpus import stopwords
+
+
+def remove_stopwords(words):
+    """Remove stop words from list of tokenized words"""
+    new_words = []
+    for word in words:
+        if word not in stopwords.words('spanish'):
+            new_words.append(word)
+    return new_words
 
 
 def get_tokens():
     texts = dm.get_all_text('data_mining/')
 
     _tokenizer = tokenizer.SpacyCustomTokenizer()
-    nlp = _tokenizer.nlp
 
     text_index = {}
     list_tokens = []
-    for i, text in enumerate(texts):
-        tokens = [t.text for t in nlp(text[0])]
-        text_index[i] = text
-        list_tokens.append(tokens)
-
+    i = 0
+    print('start tokenizer')
+    for text in texts:
+        tokens = [t.text for t in _tokenizer(text[0]) if
+                  not t.is_stop and not t.space() and not t.text == '' and not t.is_symbol and not t.is_url() and not t.is_hashtag() and not t.is_user_tag()]
+        tokens = remove_stopwords(tokens)
+        if len(tokens) > 0 and len(tokens) < 100:
+            text_index[i] = text
+            list_tokens.append(tokens)
+            i += 1
+    print(list_tokens)
+    print('end tokenizer')
     return list_tokens, text_index
 
 
@@ -73,14 +89,15 @@ def loadData2(path: str, type: str = ''):
 
 def model():
     list_tokens, index_text = get_tokens()  # la lista de los textos tokenizados
+
     sents = list_tokens
     maxlen = max([len(s) for s in sents])
-
+    print(maxlen)
     vocab = get_words(sents)  # todas las palabras que aparecen en los textos
     num_words = len(vocab)
     # num_words = 10000
-    embed_dim = 128
-    batch_size = 512
+    embed_dim = 10
+    batch_size = 64
     # maxlen = 60
 
     tok = Tokenizer(num_words=num_words, split=' ')
@@ -91,12 +108,12 @@ def model():
     encoder_inputs = Input(shape=(maxlen,), name='Encoder-Input')
     emb_layer = Embedding(num_words, embed_dim, input_length=maxlen, name='Body-Word-Embedding', mask_zero=False)
     x = emb_layer(encoder_inputs)
-    state_h = Bidirectional(LSTM(128, activation='relu', name='Encoder-Last-LSTM'))(x)
+    state_h = Bidirectional(LSTM(embed_dim, activation='relu', name='Encoder-Last-LSTM'))(x)
     encoder_model = Model(inputs=encoder_inputs, outputs=state_h, name='Encoder-Model')
     seq2seq_encoder_out = encoder_model(encoder_inputs)
 
     decoded = RepeatVector(maxlen)(seq2seq_encoder_out)
-    decoder_lstm = Bidirectional(LSTM(128, return_sequences=True, name='Decoder-LSTM-before'))
+    decoder_lstm = Bidirectional(LSTM(embed_dim, return_sequences=True, name='Decoder-LSTM-before'))
     decoder_lstm_output = decoder_lstm(decoded)
     decoder_dense = Dense(num_words, activation='softmax', name='Final-Output-Dense-before')
     decoder_outputs = decoder_dense(decoder_lstm_output)
@@ -110,7 +127,8 @@ def model():
     checkpoint_callback = ModelCheckpoint(filepath=checkpoint_prefix, save_weights_only=True)
     latest = train.latest_checkpoint(checkpoint_dir)
 
-    seq2seq_Model.load_weights(latest)
+    if latest:
+        seq2seq_Model.load_weights(latest)
 
     history = seq2seq_Model.fit(pad_seqs, np.expand_dims(pad_seqs, -1),
                                 callbacks=[checkpoint_callback],
@@ -118,9 +136,6 @@ def model():
                                 epochs=10)
 
     doc_vector, vector_doc = MappDocToVector(encoder_model, pad_seqs)
-
-    print(vector_doc)
-    print(doc_vector)
 
     kmeans = KMeans(n_clusters=10, random_state=0)
     X = [x for x in doc_vector.values()]
@@ -131,14 +146,11 @@ def model():
     for i, cluster in enumerate(predict):
         ret.append((index_text[i], cluster))
 
-    print(ret)
-
     serialize_cluster = pickle.dumps(kmeans)
     serialize_encoder_model = pickle.dumps(encoder_model)
     saveData(serialize_cluster, 'cluster', 'b')
     saveData(serialize_encoder_model, 'encoder_model', 'b')
     saveData(str(maxlen), 'maxlen')
-    print(len(X[0]))
     # guardar esto en un txt
     # guardar tambien el maxlen
 
