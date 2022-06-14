@@ -16,6 +16,8 @@ import pickle
 from keras.callbacks import ModelCheckpoint
 from tensorflow import train
 from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer, LancasterStemmer
+from nltk import SnowballStemmer
 
 
 def remove_stopwords(words):
@@ -27,7 +29,48 @@ def remove_stopwords(words):
     return new_words
 
 
+def stem_words(words):
+    """Stem words in list of tokenized words"""
+    stemmer = SnowballStemmer('spanish')
+    stems = []
+    for word in words:
+        stem = stemmer.stem(word)
+        stems.append(stem)
+    return stems
+
+
+def save_tokens(list_tokens):
+    text = ''
+    for tokens in list_tokens:
+        for token in tokens:
+            text += token + ' '
+        text += '\n'
+    with open(os.path.join(os.getcwd(), 'tokens'), 'w') as f:
+        f.write(text)
+
+
+def red_tokens():
+    with open(os.path.join(os.getcwd(), 'tokens'), 'r') as f:
+        text = f.read()
+    list_tokens = []
+    list_texts = text.split('\n')
+    for tokens in list_texts:
+        t = []
+        for a in tokens.split(' '):
+            if not a == '':
+                t.append(a)
+        list_tokens.append(t)
+    return list_tokens
+
+
 def get_tokens():
+    try:
+        tokens = red_tokens()
+        # index_text = loadData('index_text', 'b')
+        index_text = {}
+        return tokens, index_text
+    except:
+        pass
     texts = dm.get_all_text('data_mining/')
 
     _tokenizer = tokenizer.SpacyCustomTokenizer()
@@ -37,15 +80,18 @@ def get_tokens():
     i = 0
     print('start tokenizer')
     for text in texts:
-        tokens = [t.text for t in _tokenizer(text[0]) if
-                  not t.is_stop and not t.space() and not t.text == '' and not t.is_symbol and not t.is_url() and not t.is_hashtag() and not t.is_user_tag()]
+        tokens = set(t.lemma.lower() for t in _tokenizer(text[0]) if t.lemma != None and
+                     not t.is_url() and not t.is_stop and not t.is_user_tag() and not t.is_hashtag() and not t.space() and t.pos != 'PRON')
         tokens = remove_stopwords(tokens)
-        if len(tokens) > 0 and len(tokens) < 100:
+        # tokens = stem_words(tokens)
+        # tokens = lemmatize_verbs(tokens)
+        if len(tokens) > 0:
             text_index[i] = text
             list_tokens.append(tokens)
             i += 1
-    print(list_tokens)
+            # print(tokens)
     print('end tokenizer')
+    save_tokens(list_tokens)
     return list_tokens, text_index
 
 
@@ -89,22 +135,23 @@ def loadData2(path: str, type: str = ''):
 
 def model():
     list_tokens, index_text = get_tokens()  # la lista de los textos tokenizados
-
+    print(len(list_tokens), 'number of sentences')
     sents = list_tokens
     maxlen = max([len(s) for s in sents])
     print(maxlen)
     vocab = get_words(sents)  # todas las palabras que aparecen en los textos
     num_words = len(vocab)
+    print(num_words, 'num words')
     # num_words = 10000
-    embed_dim = 10
+    embed_dim = 16
     batch_size = 64
-    # maxlen = 60
+    # maxlen = 100
 
     tok = Tokenizer(num_words=num_words, split=' ')
     tok.fit_on_texts(sents)
     seqs = tok.texts_to_sequences(sents)
     pad_seqs = pad_sequences(seqs, maxlen)
-
+    print(pad_seqs)
     encoder_inputs = Input(shape=(maxlen,), name='Encoder-Input')
     emb_layer = Embedding(num_words, embed_dim, input_length=maxlen, name='Body-Word-Embedding', mask_zero=False)
     x = emb_layer(encoder_inputs)
@@ -113,13 +160,17 @@ def model():
     seq2seq_encoder_out = encoder_model(encoder_inputs)
 
     decoded = RepeatVector(maxlen)(seq2seq_encoder_out)
-    decoder_lstm = Bidirectional(LSTM(embed_dim, return_sequences=True, name='Decoder-LSTM-before'))
+    decoder_lstm = Bidirectional(LSTM(embed_dim, name='Decoder-LSTM-before'))
     decoder_lstm_output = decoder_lstm(decoded)
-    decoder_dense = Dense(num_words, activation='softmax', name='Final-Output-Dense-before')
+    decoder_dense = Dense(maxlen, activation='softmax', name='Final-Output-Dense-before')
     decoder_outputs = decoder_dense(decoder_lstm_output)
+    # decoder_dense = Dense(maxlen, activation='softmax', name='Final-Output-Dense-before-2')
+    # decoder_outputs = decoder_dense(decoder_outputs)
 
     seq2seq_Model = Model(encoder_inputs, decoder_outputs)
-    seq2seq_Model.compile(optimizer=optimizers.Nadam(learning_rate=0.001), loss='sparse_categorical_crossentropy')
+    seq2seq_Model.compile(optimizer=optimizers.Nadam(learning_rate=0.001), loss='mae')
+
+    seq2seq_Model.summary()
 
     checkpoint_dir = './training'
     checkpoint_prefix = os.path.join(checkpoint_dir, 'ckpt_{epoch}')
@@ -130,7 +181,7 @@ def model():
     if latest:
         seq2seq_Model.load_weights(latest)
 
-    history = seq2seq_Model.fit(pad_seqs, np.expand_dims(pad_seqs, -1),
+    history = seq2seq_Model.fit(pad_seqs, pad_seqs,
                                 callbacks=[checkpoint_callback],
                                 batch_size=batch_size,
                                 epochs=10)
@@ -148,9 +199,12 @@ def model():
 
     serialize_cluster = pickle.dumps(kmeans)
     serialize_encoder_model = pickle.dumps(encoder_model)
+    serialize_index_text = pickle.dumps(encoder_model)
+
     saveData(serialize_cluster, 'cluster', 'b')
     saveData(serialize_encoder_model, 'encoder_model', 'b')
     saveData(str(maxlen), 'maxlen')
+    saveData(serialize_index_text, 'index_text', 'b')
     # guardar esto en un txt
     # guardar tambien el maxlen
 
